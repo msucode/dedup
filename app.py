@@ -3,7 +3,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 
-st.title("Patient Duplicate Finder")
+st.title("Patient Duplicate Finder v2")
 
 yearly_url = st.text_input("Yearly Database Sheet URL")
 daily_url = st.text_input("Today's Linelist URL")
@@ -19,7 +19,6 @@ def normalize(text):
     return str(text).lower().strip()
 
 def get_block_key(mobile):
-    """Use ONLY last 4 digits of mobile for blocking"""
     m = str(mobile).strip()[-4:] if mobile else "XXXX"
     return m
 
@@ -45,14 +44,10 @@ if 'df_yearly' in st.session_state:
     mobile_col = st.selectbox("Mobile", cols)
     addr_col = st.selectbox("Address", cols)
     
-    top_n = st.slider("Show top matches per record", 1, 5, 3)
-    min_score = st.slider("Minimum score", 60, 95, 70)
-    
     if st.button("🔍 Find Duplicates"):
         df_yearly = st.session_state['df_yearly']
         df_daily = st.session_state['df_daily']
         
-        # Build block index
         st.info("Building index...")
         yearly_blocks = {}
         for idx, row in df_yearly.iterrows():
@@ -61,7 +56,7 @@ if 'df_yearly' in st.session_state:
                 yearly_blocks[key] = []
             yearly_blocks[key].append(row)
         
-        st.info(f"Index built. Starting comparison...")
+        st.info("Comparing records...")
         
         all_results = []
         
@@ -73,66 +68,100 @@ if 'df_yearly' in st.session_state:
             daily_mobile = normalize(daily_row[mobile_col])
             daily_addr = normalize(daily_row[addr_col])
             
-            matches_for_this_record = []
+            matches = []
             
             for yearly_row in candidates:
                 yearly_name = normalize(yearly_row[name_col])
                 yearly_mobile = normalize(yearly_row[mobile_col])
                 yearly_addr = normalize(yearly_row[addr_col])
                 
-                score = 0
-                
-                # Mobile exact = 50
-                if daily_mobile == yearly_mobile:
-                    score += 50
-                    m_pct = 100
-                else:
-                    m_pct = 0
-                
-                # Name fuzzy = 30
+                # Name similarity
                 n_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
-                score += (n_pct / 100) * 30
                 
-                # Address fuzzy = 20
+                # Mobile match
+                mobile_match = (daily_mobile == yearly_mobile)
+                
+                # Address similarity
                 a_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
-                score += (a_pct / 100) * 20
                 
-                if score >= min_score:
-                    matches_for_this_record.append({
+                # NEW STRICTER LOGIC
+                score = 0
+                confidence = "❌ NOT DUPLICATE"
+                
+                # HIGH CONFIDENCE (≥90): Mobile + Name must BOTH be strong
+                if mobile_match and n_pct >= 80:
+                    score = 50 + (n_pct/100)*30 + (a_pct/100)*20
+                    if score >= 90:
+                        confidence = "🔴 HIGH - Same Person"
+                    elif score >= 80:
+                        confidence = "🟡 MEDIUM - Check Name"
+                    else:
+                        confidence = "⚪ LOW - Weak Match"
+                
+                # MEDIUM (70-89): Mobile match but name is weak = FAMILY or ERROR
+                elif mobile_match and n_pct >= 50:
+                    score = 50 + (n_pct/100)*30 + (a_pct/100)*20
+                    confidence = "⚪ LOW - Same Mobile, Different Name (Family?)"
+                
+                # NO MOBILE MATCH: Need very high name+address
+                elif n_pct >= 90 and a_pct >= 70:
+                    score = (n_pct/100)*50 + (a_pct/100)*50
+                    confidence = "🟡 MEDIUM - No Mobile Match"
+                
+                if score >= 70 or (mobile_match and n_pct >= 50):
+                    matches.append({
                         'score': round(score),
                         'n_pct': n_pct,
-                        'm_pct': m_pct,
                         'a_pct': a_pct,
+                        'mobile_match': mobile_match,
+                        'confidence': confidence,
                         'daily_row': daily_row,
                         'yearly_row': yearly_row
                     })
             
-            # Keep only TOP N matches for this daily record
-            matches_for_this_record.sort(key=lambda x: x['score'], reverse=True)
-            matches_for_this_record = matches_for_this_record[:top_n]
+            # Sort and keep top 5
+            matches.sort(key=lambda x: (x['score'], x['n_pct']), reverse=True)
+            matches = matches[:5]
             
-            for match in matches_for_this_record:
+            for rank, match in enumerate(matches, 1):
                 all_results.append({
-                    'Daily_Record': i+1,
+                    'Daily_Rec': i+1,
+                    'Rank': rank,
                     'Score': match['score'],
-                    'Status': '🔴 DUPLICATE' if match['score'] >= 85 else '🟡 REVIEW',
+                    'Confidence': match['confidence'],
                     'Daily_Name': match['daily_row'][name_col],
                     'Yearly_Name': match['yearly_row'][name_col],
-                    'Name_Match': f"{match['n_pct']}%",
+                    'Name%': f"{int(match['n_pct'])}%",
                     'Daily_Mobile': match['daily_row'][mobile_col],
                     'Yearly_Mobile': match['yearly_row'][mobile_col],
-                    'Mobile_Match': f"{match['m_pct']}%",
-                    'Daily_Address': str(match['daily_row'][addr_col])[:60],
-                    'Yearly_Address': str(match['yearly_row'][addr_col])[:60],
-                    'Address_Match': f"{match['a_pct']}%"
+                    'Mobile': '✅' if match['mobile_match'] else '❌',
+                    'Daily_Addr': str(match['daily_row'][addr_col])[:40],
+                    'Yearly_Addr': str(match['yearly_row'][addr_col])[:40],
+                    'Addr%': f"{int(match['a_pct'])}%"
                 })
         
         if all_results:
             df_out = pd.DataFrame(all_results)
-            st.success(f"✅ Found {len(df_out)} matches from {len(df_daily)} daily records")
-            st.caption(f"Showing top {top_n} matches per record, minimum score {min_score}")
             
-            st.dataframe(df_out, use_container_width=True, height=600)
-            st.download_button("📥 Download", df_out.to_csv(index=False), "duplicates.csv")
+            # Separate into categories
+            high = df_out[df_out['Confidence'].str.contains('HIGH')]
+            medium = df_out[df_out['Confidence'].str.contains('MEDIUM')]
+            low = df_out[df_out['Confidence'].str.contains('LOW')]
+            
+            st.success(f"✅ Results: {len(high)} High Confidence, {len(medium)} Medium, {len(low)} Low")
+            
+            if len(high) > 0:
+                st.subheader("🔴 High Confidence Duplicates (Same Person)")
+                st.dataframe(high, use_container_width=True)
+            
+            if len(medium) > 0:
+                st.subheader("🟡 Medium - Needs Manual Check")
+                st.dataframe(medium, use_container_width=True)
+            
+            if len(low) > 0:
+                with st.expander("⚪ Low Confidence (Likely Different People)"):
+                    st.dataframe(low, use_container_width=True)
+            
+            st.download_button("📥 Download All", df_out.to_csv(index=False), "results.csv")
         else:
-            st.warning(f"No matches found above {min_score} score")
+            st.warning("No matches found")
