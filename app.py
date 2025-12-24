@@ -94,6 +94,7 @@ if 'df_yearly' in st.session_state:
                         'daily_row': daily_row,
                         'yearly_row': yearly_row,
                         'mobile_match': daily_mobile == yearly_mobile,
+                        'addr_match': daily_addr == yearly_addr,
                         'extra_match': daily_extra == yearly_extra
                     })
             
@@ -112,6 +113,7 @@ if 'df_yearly' in st.session_state:
                         'Col2': '✅' if match['mobile_match'] else '❌',
                         'Daily_Col3': str(match['daily_row'][addr_col])[:30],
                         'Yearly_Col3': str(match['yearly_row'][addr_col])[:30],
+                        'Col3': '✅' if match['addr_match'] else '❌',
                         'Daily_Col4': str(match['daily_row'][extra_col])[:30],
                         'Yearly_Col4': str(match['yearly_row'][extra_col])[:30],
                         'Col4': '✅' if match['extra_match'] else '❌'
@@ -129,7 +131,9 @@ if 'df_yearly' in st.session_state:
                     col1_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
                     col2_match = (daily_mobile == yearly_mobile)
                     col3_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
+                    col3_match = (daily_addr == yearly_addr)
                     col4_pct = fuzz.token_set_ratio(daily_extra, yearly_extra)
+                    col4_match = (daily_extra == yearly_extra)
                     
                     # NEW SCORING: 40+30+15+15 = 100
                     score = 0
@@ -154,7 +158,9 @@ if 'df_yearly' in st.session_state:
                         'col1_pct': col1_pct,
                         'col2_match': col2_match,
                         'col3_pct': col3_pct,
+                        'col3_match': col3_match,
                         'col4_pct': col4_pct,
+                        'col4_match': col4_match,
                         'match_type': match_type,
                         'daily_row': daily_row,
                         'yearly_row': yearly_row
@@ -176,9 +182,11 @@ if 'df_yearly' in st.session_state:
                             'Col2': '✅' if match['col2_match'] else '❌',
                             'Daily_Col3': str(match['daily_row'][addr_col])[:30],
                             'Yearly_Col3': str(match['yearly_row'][addr_col])[:30],
+                            'Col3': '✅' if match['col3_match'] else '❌',
                             'Col3%': f"{int(match['col3_pct'])}%",
                             'Daily_Col4': str(match['daily_row'][extra_col])[:30],
                             'Yearly_Col4': str(match['yearly_row'][extra_col])[:30],
+                            'Col4': '✅' if match['col4_match'] else '❌',
                             'Col4%': f"{int(match['col4_pct'])}%"
                         })
         
