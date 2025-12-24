@@ -18,6 +18,11 @@ def normalize(text):
     if pd.isna(text): return ""
     return str(text).lower().strip()
 
+def is_blank(text):
+    """Check if field is empty/blank"""
+    normalized = normalize(text)
+    return normalized == "" or normalized == "nan" or len(normalized) < 2
+
 def get_block_key(mobile):
     m = str(mobile).strip()[-4:] if mobile else "XXXX"
     return m
@@ -51,18 +56,30 @@ if 'df_yearly' in st.session_state:
         all_results = []
         exact_count = 0
         fuzzy_count = 0
+        skipped_count = 0
         
-        # Build index for faster search
-        st.info("Stage 1: Searching for EXACT matches...")
+        # Build index
+        st.info("Building index...")
         yearly_blocks = {}
         for idx, row in df_yearly.iterrows():
+            # Skip yearly records with blank name or mobile
+            if is_blank(row[name_col]) or is_blank(row[mobile_col]):
+                continue
+                
             key = get_block_key(row[mobile_col])
             if key not in yearly_blocks:
                 yearly_blocks[key] = []
             yearly_blocks[key].append(row)
         
+        st.info("Stage 1: Searching EXACT matches...")
+        
         # Process each daily record
         for i, daily_row in df_daily.iterrows():
+            # SKIP if name or mobile is BLANK
+            if is_blank(daily_row[name_col]) or is_blank(daily_row[mobile_col]):
+                skipped_count += 1
+                continue
+            
             daily_name = normalize(daily_row[name_col])
             daily_mobile = normalize(daily_row[mobile_col])
             daily_addr = normalize(daily_row[addr_col])
@@ -73,30 +90,27 @@ if 'df_yearly' in st.session_state:
             exact_matches = []
             fuzzy_matches = []
             
-            # STAGE 1: Check for EXACT name match
+            # STAGE 1: Check EXACT name match
             for yearly_row in candidates:
                 yearly_name = normalize(yearly_row[name_col])
                 yearly_mobile = normalize(yearly_row[mobile_col])
                 yearly_addr = normalize(yearly_row[addr_col])
                 
+                # Skip if yearly has blank name or mobile
+                if is_blank(yearly_row[name_col]) or is_blank(yearly_row[mobile_col]):
+                    continue
+                
                 if daily_name == yearly_name:
-                    # EXACT MATCH FOUND
                     exact_matches.append({
                         'daily_row': daily_row,
                         'yearly_row': yearly_row,
-                        'daily_name': daily_name,
-                        'yearly_name': yearly_name,
-                        'daily_mobile': daily_mobile,
-                        'yearly_mobile': yearly_mobile,
-                        'daily_addr': daily_addr,
-                        'yearly_addr': yearly_addr,
                         'mobile_match': daily_mobile == yearly_mobile
                     })
             
-            # If EXACT match found, skip fuzzy
+            # If EXACT match found
             if exact_matches:
                 exact_count += 1
-                for match in exact_matches[:3]:  # Top 3 exact matches
+                for match in exact_matches[:3]:
                     all_results.append({
                         'Daily_Rec': i+1,
                         'Match_Type': '🟢 EXACT NAME MATCH',
@@ -111,14 +125,17 @@ if 'df_yearly' in st.session_state:
                         'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
                     })
             
-            # STAGE 2: No exact match, run FUZZY
+            # STAGE 2: FUZZY search
             else:
                 for yearly_row in candidates:
                     yearly_name = normalize(yearly_row[name_col])
                     yearly_mobile = normalize(yearly_row[mobile_col])
                     yearly_addr = normalize(yearly_row[addr_col])
                     
-                    # Calculate fuzzy scores
+                    # Skip blank yearly records
+                    if is_blank(yearly_row[name_col]) or is_blank(yearly_row[mobile_col]):
+                        continue
+                    
                     n_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
                     a_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
                     mobile_match = (daily_mobile == yearly_mobile)
@@ -130,7 +147,6 @@ if 'df_yearly' in st.session_state:
                     else:
                         score = (n_pct/100)*50 + (a_pct/100)*50
                     
-                    # Determine match type
                     if score >= 85:
                         match_type = '🔴 HIGH - Fuzzy Match'
                     elif score >= 70:
@@ -150,7 +166,6 @@ if 'df_yearly' in st.session_state:
                         'yearly_row': yearly_row
                     })
                 
-                # Keep top 3 fuzzy matches
                 if fuzzy_matches:
                     fuzzy_count += 1
                     fuzzy_matches.sort(key=lambda x: x['score'], reverse=True)
@@ -169,34 +184,35 @@ if 'df_yearly' in st.session_state:
                             'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
                         })
         
-        st.success(f"✅ Stage 1: {exact_count} records had EXACT matches")
-        st.success(f"✅ Stage 2: {fuzzy_count} records searched with FUZZY")
+        st.success(f"✅ Stage 1: {exact_count} EXACT matches")
+        st.success(f"✅ Stage 2: {fuzzy_count} FUZZY matches")
+        if skipped_count > 0:
+            st.warning(f"⚠️ Skipped {skipped_count} records with blank Name/Mobile")
         
         if all_results:
             df_out = pd.DataFrame(all_results)
             
-            # Separate results
             exact = df_out[df_out['Match_Type'].str.contains('EXACT')]
             high = df_out[df_out['Match_Type'].str.contains('HIGH')]
             medium = df_out[df_out['Match_Type'].str.contains('MEDIUM')]
             low = df_out[df_out['Match_Type'].str.contains('LOW')]
             
             if len(exact) > 0:
-                st.subheader(f"🟢 Exact Name Matches ({len(exact)})")
+                st.subheader(f"🟢 Exact Matches ({len(exact)})")
                 st.dataframe(exact, use_container_width=True)
             
             if len(high) > 0:
-                st.subheader(f"🔴 High Confidence Fuzzy ({len(high)})")
+                st.subheader(f"🔴 High Fuzzy ({len(high)})")
                 st.dataframe(high, use_container_width=True)
             
             if len(medium) > 0:
-                st.subheader(f"🟡 Medium Confidence Fuzzy ({len(medium)})")
+                st.subheader(f"🟡 Medium Fuzzy ({len(medium)})")
                 st.dataframe(medium, use_container_width=True)
             
             if len(low) > 0:
-                with st.expander(f"⚪ Low Confidence Fuzzy ({len(low)})"):
+                with st.expander(f"⚪ Low Fuzzy ({len(low)})"):
                     st.dataframe(low, use_container_width=True)
             
-            st.download_button("📥 Download All Results", df_out.to_csv(index=False), "duplicates.csv")
+            st.download_button("📥 Download", df_out.to_csv(index=False), "duplicates.csv")
         else:
             st.warning("No matches found")
