@@ -3,7 +3,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 
-st.title("Patient Duplicate Finder - Exact First, Then Fuzzy")
+st.title("MSU MUMBAI, Patient Duplicate Finder - Exact First, Then Fuzzy")
 
 yearly_url = st.text_input("Yearly Database Sheet URL")
 daily_url = st.text_input("Today's Linelist URL")
