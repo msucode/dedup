@@ -3,7 +3,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 
-st.title("Patient Duplicate Finder v2")
+st.title("Patient Duplicate Finder - Exact First, Then Fuzzy")
 
 yearly_url = st.text_input("Yearly Database Sheet URL")
 daily_url = st.text_input("Today's Linelist URL")
@@ -48,7 +48,12 @@ if 'df_yearly' in st.session_state:
         df_yearly = st.session_state['df_yearly']
         df_daily = st.session_state['df_daily']
         
-        st.info("Building index...")
+        all_results = []
+        exact_count = 0
+        fuzzy_count = 0
+        
+        # Build index for faster search
+        st.info("Stage 1: Searching for EXACT matches...")
         yearly_blocks = {}
         for idx, row in df_yearly.iterrows():
             key = get_block_key(row[mobile_col])
@@ -56,112 +61,142 @@ if 'df_yearly' in st.session_state:
                 yearly_blocks[key] = []
             yearly_blocks[key].append(row)
         
-        st.info("Comparing records...")
-        
-        all_results = []
-        
+        # Process each daily record
         for i, daily_row in df_daily.iterrows():
-            block_key = get_block_key(daily_row[mobile_col])
-            candidates = yearly_blocks.get(block_key, [])
-            
             daily_name = normalize(daily_row[name_col])
             daily_mobile = normalize(daily_row[mobile_col])
             daily_addr = normalize(daily_row[addr_col])
             
-            matches = []
+            block_key = get_block_key(daily_row[mobile_col])
+            candidates = yearly_blocks.get(block_key, [])
             
+            exact_matches = []
+            fuzzy_matches = []
+            
+            # STAGE 1: Check for EXACT name match
             for yearly_row in candidates:
                 yearly_name = normalize(yearly_row[name_col])
                 yearly_mobile = normalize(yearly_row[mobile_col])
                 yearly_addr = normalize(yearly_row[addr_col])
                 
-                # Name similarity
-                n_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
-                
-                # Mobile match
-                mobile_match = (daily_mobile == yearly_mobile)
-                
-                # Address similarity
-                a_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
-                
-                # NEW STRICTER LOGIC
-                score = 0
-                confidence = "❌ NOT DUPLICATE"
-                
-                # HIGH CONFIDENCE (≥90): Mobile + Name must BOTH be strong
-                if mobile_match and n_pct >= 80:
-                    score = 50 + (n_pct/100)*30 + (a_pct/100)*20
-                    if score >= 90:
-                        confidence = "🔴 HIGH - Same Person"
-                    elif score >= 80:
-                        confidence = "🟡 MEDIUM - Check Name"
+                if daily_name == yearly_name:
+                    # EXACT MATCH FOUND
+                    exact_matches.append({
+                        'daily_row': daily_row,
+                        'yearly_row': yearly_row,
+                        'daily_name': daily_name,
+                        'yearly_name': yearly_name,
+                        'daily_mobile': daily_mobile,
+                        'yearly_mobile': yearly_mobile,
+                        'daily_addr': daily_addr,
+                        'yearly_addr': yearly_addr,
+                        'mobile_match': daily_mobile == yearly_mobile
+                    })
+            
+            # If EXACT match found, skip fuzzy
+            if exact_matches:
+                exact_count += 1
+                for match in exact_matches[:3]:  # Top 3 exact matches
+                    all_results.append({
+                        'Daily_Rec': i+1,
+                        'Match_Type': '🟢 EXACT NAME MATCH',
+                        'Score': 100,
+                        'Daily_Name': match['daily_row'][name_col],
+                        'Yearly_Name': match['yearly_row'][name_col],
+                        'Name%': '100%',
+                        'Daily_Mobile': match['daily_row'][mobile_col],
+                        'Yearly_Mobile': match['yearly_row'][mobile_col],
+                        'Mobile': '✅' if match['mobile_match'] else '❌',
+                        'Daily_Addr': str(match['daily_row'][addr_col])[:40],
+                        'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
+                    })
+            
+            # STAGE 2: No exact match, run FUZZY
+            else:
+                for yearly_row in candidates:
+                    yearly_name = normalize(yearly_row[name_col])
+                    yearly_mobile = normalize(yearly_row[mobile_col])
+                    yearly_addr = normalize(yearly_row[addr_col])
+                    
+                    # Calculate fuzzy scores
+                    n_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
+                    a_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
+                    mobile_match = (daily_mobile == yearly_mobile)
+                    
+                    score = 0
+                    
+                    if mobile_match:
+                        score = 50 + (n_pct/100)*30 + (a_pct/100)*20
                     else:
-                        confidence = "⚪ LOW - Weak Match"
-                
-                # MEDIUM (70-89): Mobile match but name is weak = FAMILY or ERROR
-                elif mobile_match and n_pct >= 50:
-                    score = 50 + (n_pct/100)*30 + (a_pct/100)*20
-                    confidence = "⚪ LOW - Same Mobile, Different Name (Family?)"
-                
-                # NO MOBILE MATCH: Need very high name+address
-                elif n_pct >= 90 and a_pct >= 70:
-                    score = (n_pct/100)*50 + (a_pct/100)*50
-                    confidence = "🟡 MEDIUM - No Mobile Match"
-                
-                if score >= 70 or (mobile_match and n_pct >= 50):
-                    matches.append({
+                        score = (n_pct/100)*50 + (a_pct/100)*50
+                    
+                    # Determine match type
+                    if score >= 85:
+                        match_type = '🔴 HIGH - Fuzzy Match'
+                    elif score >= 70:
+                        match_type = '🟡 MEDIUM - Fuzzy Match'
+                    elif score >= 60:
+                        match_type = '⚪ LOW - Fuzzy Match'
+                    else:
+                        continue
+                    
+                    fuzzy_matches.append({
                         'score': round(score),
                         'n_pct': n_pct,
                         'a_pct': a_pct,
                         'mobile_match': mobile_match,
-                        'confidence': confidence,
+                        'match_type': match_type,
                         'daily_row': daily_row,
                         'yearly_row': yearly_row
                     })
-            
-            # Sort and keep top 5
-            matches.sort(key=lambda x: (x['score'], x['n_pct']), reverse=True)
-            matches = matches[:5]
-            
-            for rank, match in enumerate(matches, 1):
-                all_results.append({
-                    'Daily_Rec': i+1,
-                    'Rank': rank,
-                    'Score': match['score'],
-                    'Confidence': match['confidence'],
-                    'Daily_Name': match['daily_row'][name_col],
-                    'Yearly_Name': match['yearly_row'][name_col],
-                    'Name%': f"{int(match['n_pct'])}%",
-                    'Daily_Mobile': match['daily_row'][mobile_col],
-                    'Yearly_Mobile': match['yearly_row'][mobile_col],
-                    'Mobile': '✅' if match['mobile_match'] else '❌',
-                    'Daily_Addr': str(match['daily_row'][addr_col])[:40],
-                    'Yearly_Addr': str(match['yearly_row'][addr_col])[:40],
-                    'Addr%': f"{int(match['a_pct'])}%"
-                })
+                
+                # Keep top 3 fuzzy matches
+                if fuzzy_matches:
+                    fuzzy_count += 1
+                    fuzzy_matches.sort(key=lambda x: x['score'], reverse=True)
+                    for match in fuzzy_matches[:3]:
+                        all_results.append({
+                            'Daily_Rec': i+1,
+                            'Match_Type': match['match_type'],
+                            'Score': match['score'],
+                            'Daily_Name': match['daily_row'][name_col],
+                            'Yearly_Name': match['yearly_row'][name_col],
+                            'Name%': f"{int(match['n_pct'])}%",
+                            'Daily_Mobile': match['daily_row'][mobile_col],
+                            'Yearly_Mobile': match['yearly_row'][mobile_col],
+                            'Mobile': '✅' if match['mobile_match'] else '❌',
+                            'Daily_Addr': str(match['daily_row'][addr_col])[:40],
+                            'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
+                        })
+        
+        st.success(f"✅ Stage 1: {exact_count} records had EXACT matches")
+        st.success(f"✅ Stage 2: {fuzzy_count} records searched with FUZZY")
         
         if all_results:
             df_out = pd.DataFrame(all_results)
             
-            # Separate into categories
-            high = df_out[df_out['Confidence'].str.contains('HIGH')]
-            medium = df_out[df_out['Confidence'].str.contains('MEDIUM')]
-            low = df_out[df_out['Confidence'].str.contains('LOW')]
+            # Separate results
+            exact = df_out[df_out['Match_Type'].str.contains('EXACT')]
+            high = df_out[df_out['Match_Type'].str.contains('HIGH')]
+            medium = df_out[df_out['Match_Type'].str.contains('MEDIUM')]
+            low = df_out[df_out['Match_Type'].str.contains('LOW')]
             
-            st.success(f"✅ Results: {len(high)} High Confidence, {len(medium)} Medium, {len(low)} Low")
+            if len(exact) > 0:
+                st.subheader(f"🟢 Exact Name Matches ({len(exact)})")
+                st.dataframe(exact, use_container_width=True)
             
             if len(high) > 0:
-                st.subheader("🔴 High Confidence Duplicates (Same Person)")
+                st.subheader(f"🔴 High Confidence Fuzzy ({len(high)})")
                 st.dataframe(high, use_container_width=True)
             
             if len(medium) > 0:
-                st.subheader("🟡 Medium - Needs Manual Check")
+                st.subheader(f"🟡 Medium Confidence Fuzzy ({len(medium)})")
                 st.dataframe(medium, use_container_width=True)
             
             if len(low) > 0:
-                with st.expander("⚪ Low Confidence (Likely Different People)"):
+                with st.expander(f"⚪ Low Confidence Fuzzy ({len(low)})"):
                     st.dataframe(low, use_container_width=True)
             
-            st.download_button("📥 Download All", df_out.to_csv(index=False), "results.csv")
+            st.download_button("📥 Download All Results", df_out.to_csv(index=False), "duplicates.csv")
         else:
             st.warning("No matches found")
