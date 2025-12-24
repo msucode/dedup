@@ -3,216 +3,133 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 
-st.title("Patient Duplicate Finder - Exact First, Then Fuzzy")
+st.title("Patient Duplicate Finder")
 
-yearly_url = st.text_input("Yearly Database Sheet URL")
-daily_url = st.text_input("Today's Linelist URL")
+yearly_url = st.text_input("Yearly Sheet URL")
+daily_url = st.text_input("Daily Sheet URL")
 
-def convert_to_csv_url(url):
-    sheet_id = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
-    if sheet_id:
-        return f"https://docs.google.com/spreadsheets/d/{sheet_id.group(1)}/export?format=csv"
+def convert_url(url):
+    match = re.search(r'/d/([a-zA-Z0-9-_]+)', url)
+    if match:
+        return f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=csv"
     return url
 
-def normalize(text):
-    if pd.isna(text): return ""
-    return str(text).lower().strip()
+def clean(text):
+    if pd.isna(text):
+        return ""
+    return str(text).strip().lower()
 
-def is_blank(text):
-    """Check if field is empty/blank"""
-    normalized = normalize(text)
-    return normalized == "" or normalized == "nan" or len(normalized) < 2
+def is_empty(text):
+    cleaned = clean(text)
+    return len(cleaned) < 2
 
-def get_block_key(mobile):
-    m = str(mobile).strip()[-4:] if mobile else "XXXX"
-    return m
-
-if st.button("Load Sheets"):
+if st.button("Load"):
     if yearly_url and daily_url:
         try:
-            df_yearly = pd.read_csv(convert_to_csv_url(yearly_url))
-            df_daily = pd.read_csv(convert_to_csv_url(daily_url))
-            
-            st.session_state['df_yearly'] = df_yearly
-            st.session_state['df_daily'] = df_daily
-            
-            st.success(f"✅ {len(df_yearly)} yearly, {len(df_daily)} daily")
-            st.write("**Columns:**", list(df_daily.columns[:15]))
+            df_yearly = pd.read_csv(convert_url(yearly_url))
+            df_daily = pd.read_csv(convert_url(daily_url))
+            st.session_state['yearly'] = df_yearly
+            st.session_state['daily'] = df_daily
+            st.success(f"Loaded: {len(df_yearly)} yearly, {len(df_daily)} daily")
+            st.write("Columns:", list(df_daily.columns))
         except Exception as e:
-            st.error(f"❌ {e}")
+            st.error(str(e))
 
-if 'df_yearly' in st.session_state:
-    cols = list(st.session_state['df_daily'].columns)
+if 'yearly' in st.session_state:
+    cols = list(st.session_state['daily'].columns)
     
-    st.subheader("Select Columns")
-    name_col = st.selectbox("Name", cols)
-    mobile_col = st.selectbox("Mobile", cols)
-    addr_col = st.selectbox("Address", cols)
+    name_col = st.selectbox("Name Column", cols)
+    mobile_col = st.selectbox("Mobile Column", cols)
+    addr_col = st.selectbox("Address Column", cols)
     
-    if st.button("🔍 Find Duplicates"):
-        df_yearly = st.session_state['df_yearly']
-        df_daily = st.session_state['df_daily']
+    if st.button("Find Duplicates"):
+        yearly = st.session_state['yearly']
+        daily = st.session_state['daily']
         
-        all_results = []
-        exact_count = 0
-        fuzzy_count = 0
-        skipped_count = 0
+        results = []
         
-        # Build index
-        st.info("Building index...")
-        yearly_blocks = {}
-        for idx, row in df_yearly.iterrows():
-            # Skip yearly records with blank name or mobile
-            if is_blank(row[name_col]) or is_blank(row[mobile_col]):
-                continue
-                
-            key = get_block_key(row[mobile_col])
-            if key not in yearly_blocks:
-                yearly_blocks[key] = []
-            yearly_blocks[key].append(row)
-        
-        st.info("Stage 1: Searching EXACT matches...")
-        
-        # Process each daily record
-        for i, daily_row in df_daily.iterrows():
-            # SKIP if name or mobile is BLANK
-            if is_blank(daily_row[name_col]) or is_blank(daily_row[mobile_col]):
-                skipped_count += 1
+        for i, d_row in daily.iterrows():
+            d_name = clean(d_row[name_col])
+            d_mobile = clean(d_row[mobile_col])
+            d_addr = clean(d_row[addr_col])
+            
+            # Check if blank
+            if is_empty(d_row[name_col]) or is_empty(d_row[mobile_col]):
+                results.append({
+                    'Daily_Rec': i+1,
+                    'Type': '🟣 BLANK',
+                    'Score': 0,
+                    'Daily_Name': d_row[name_col],
+                    'Yearly_Name': '-',
+                    'Daily_Mobile': d_row[mobile_col],
+                    'Yearly_Mobile': '-'
+                })
                 continue
             
-            daily_name = normalize(daily_row[name_col])
-            daily_mobile = normalize(daily_row[mobile_col])
-            daily_addr = normalize(daily_row[addr_col])
+            matches = []
             
-            block_key = get_block_key(daily_row[mobile_col])
-            candidates = yearly_blocks.get(block_key, [])
-            
-            exact_matches = []
-            fuzzy_matches = []
-            
-            # STAGE 1: Check EXACT name match
-            for yearly_row in candidates:
-                yearly_name = normalize(yearly_row[name_col])
-                yearly_mobile = normalize(yearly_row[mobile_col])
-                yearly_addr = normalize(yearly_row[addr_col])
+            # Compare with all yearly
+            for j, y_row in yearly.iterrows():
+                y_name = clean(y_row[name_col])
+                y_mobile = clean(y_row[mobile_col])
+                y_addr = clean(y_row[addr_col])
                 
-                # Skip if yearly has blank name or mobile
-                if is_blank(yearly_row[name_col]) or is_blank(yearly_row[mobile_col]):
+                # Skip blank yearly
+                if is_empty(y_row[name_col]) or is_empty(y_row[mobile_col]):
                     continue
                 
-                if daily_name == yearly_name:
-                    exact_matches.append({
-                        'daily_row': daily_row,
-                        'yearly_row': yearly_row,
-                        'mobile_match': daily_mobile == yearly_mobile
+                # Check exact name match
+                if d_name == y_name and d_name != "":
+                    matches.append({
+                        'type': '🟢 EXACT',
+                        'score': 100,
+                        'name_pct': 100,
+                        'y_row': y_row
                     })
-            
-            # If EXACT match found
-            if exact_matches:
-                exact_count += 1
-                for match in exact_matches[:3]:
-                    all_results.append({
-                        'Daily_Rec': i+1,
-                        'Match_Type': '🟢 EXACT NAME MATCH',
-                        'Score': 100,
-                        'Daily_Name': match['daily_row'][name_col],
-                        'Yearly_Name': match['yearly_row'][name_col],
-                        'Name%': '100%',
-                        'Daily_Mobile': match['daily_row'][mobile_col],
-                        'Yearly_Mobile': match['yearly_row'][mobile_col],
-                        'Mobile': '✅' if match['mobile_match'] else '❌',
-                        'Daily_Addr': str(match['daily_row'][addr_col])[:40],
-                        'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
-                    })
-            
-            # STAGE 2: FUZZY search
-            else:
-                for yearly_row in candidates:
-                    yearly_name = normalize(yearly_row[name_col])
-                    yearly_mobile = normalize(yearly_row[mobile_col])
-                    yearly_addr = normalize(yearly_row[addr_col])
+                else:
+                    # Fuzzy match
+                    name_sim = fuzz.token_sort_ratio(d_name, y_name)
+                    addr_sim = fuzz.token_set_ratio(d_addr, y_addr)
+                    mobile_same = (d_mobile == y_mobile)
                     
-                    # Skip blank yearly records
-                    if is_blank(yearly_row[name_col]) or is_blank(yearly_row[mobile_col]):
-                        continue
-                    
-                    n_pct = fuzz.token_sort_ratio(daily_name, yearly_name)
-                    a_pct = fuzz.token_set_ratio(daily_addr, yearly_addr)
-                    mobile_match = (daily_mobile == yearly_mobile)
-                    
-                    score = 0
-                    
-                    if mobile_match:
-                        score = 50 + (n_pct/100)*30 + (a_pct/100)*20
+                    if mobile_same:
+                        score = 50 + (name_sim/100)*30 + (addr_sim/100)*20
                     else:
-                        score = (n_pct/100)*50 + (a_pct/100)*50
+                        score = (name_sim/100)*50 + (addr_sim/100)*50
                     
-                    if score >= 85:
-                        match_type = '🔴 HIGH - Fuzzy Match'
-                    elif score >= 70:
-                        match_type = '🟡 MEDIUM - Fuzzy Match'
-                    elif score >= 60:
-                        match_type = '⚪ LOW - Fuzzy Match'
-                    else:
-                        continue
-                    
-                    fuzzy_matches.append({
-                        'score': round(score),
-                        'n_pct': n_pct,
-                        'a_pct': a_pct,
-                        'mobile_match': mobile_match,
-                        'match_type': match_type,
-                        'daily_row': daily_row,
-                        'yearly_row': yearly_row
-                    })
-                
-                if fuzzy_matches:
-                    fuzzy_count += 1
-                    fuzzy_matches.sort(key=lambda x: x['score'], reverse=True)
-                    for match in fuzzy_matches[:3]:
-                        all_results.append({
-                            'Daily_Rec': i+1,
-                            'Match_Type': match['match_type'],
-                            'Score': match['score'],
-                            'Daily_Name': match['daily_row'][name_col],
-                            'Yearly_Name': match['yearly_row'][name_col],
-                            'Name%': f"{int(match['n_pct'])}%",
-                            'Daily_Mobile': match['daily_row'][mobile_col],
-                            'Yearly_Mobile': match['yearly_row'][mobile_col],
-                            'Mobile': '✅' if match['mobile_match'] else '❌',
-                            'Daily_Addr': str(match['daily_row'][addr_col])[:40],
-                            'Yearly_Addr': str(match['yearly_row'][addr_col])[:40]
+                    if score >= 60:
+                        if score >= 85:
+                            match_type = '🔴 HIGH'
+                        elif score >= 70:
+                            match_type = '🟡 MEDIUM'
+                        else:
+                            match_type = '⚪ LOW'
+                        
+                        matches.append({
+                            'type': match_type,
+                            'score': round(score),
+                            'name_pct': name_sim,
+                            'y_row': y_row
                         })
+            
+            # Get top 3 matches
+            matches.sort(key=lambda x: x['score'], reverse=True)
+            for match in matches[:3]:
+                results.append({
+                    'Daily_Rec': i+1,
+                    'Type': match['type'],
+                    'Score': match['score'],
+                    'Daily_Name': d_row[name_col],
+                    'Yearly_Name': match['y_row'][name_col],
+                    'Name%': f"{int(match['name_pct'])}%",
+                    'Daily_Mobile': d_row[mobile_col],
+                    'Yearly_Mobile': match['y_row'][mobile_col]
+                })
         
-        st.success(f"✅ Stage 1: {exact_count} EXACT matches")
-        st.success(f"✅ Stage 2: {fuzzy_count} FUZZY matches")
-        if skipped_count > 0:
-            st.warning(f"⚠️ Skipped {skipped_count} records with blank Name/Mobile")
-        
-        if all_results:
-            df_out = pd.DataFrame(all_results)
-            
-            exact = df_out[df_out['Match_Type'].str.contains('EXACT')]
-            high = df_out[df_out['Match_Type'].str.contains('HIGH')]
-            medium = df_out[df_out['Match_Type'].str.contains('MEDIUM')]
-            low = df_out[df_out['Match_Type'].str.contains('LOW')]
-            
-            if len(exact) > 0:
-                st.subheader(f"🟢 Exact Matches ({len(exact)})")
-                st.dataframe(exact, use_container_width=True)
-            
-            if len(high) > 0:
-                st.subheader(f"🔴 High Fuzzy ({len(high)})")
-                st.dataframe(high, use_container_width=True)
-            
-            if len(medium) > 0:
-                st.subheader(f"🟡 Medium Fuzzy ({len(medium)})")
-                st.dataframe(medium, use_container_width=True)
-            
-            if len(low) > 0:
-                with st.expander(f"⚪ Low Fuzzy ({len(low)})"):
-                    st.dataframe(low, use_container_width=True)
-            
-            st.download_button("📥 Download", df_out.to_csv(index=False), "duplicates.csv")
+        if results:
+            df_results = pd.DataFrame(results)
+            st.success(f"Found {len(df_results)} matches")
+            st.dataframe(df_results, use_container_width=True)
+            st.download_button("Download", df_results.to_csv(index=False), "duplicates.csv")
         else:
-            st.warning("No matches found")
+            st.warning("No matches")
