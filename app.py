@@ -3,7 +3,7 @@ import pandas as pd
 from rapidfuzz import fuzz
 import re
 
-st.title("MSU MUMBAI, Patient Duplicate Finder - Exact First, Then Fuzzy")
+st.title("Patient Duplicate Finder - Exact First, Then Fuzzy")
 
 yearly_url = st.text_input("Yearly Database Sheet URL")
 daily_url = st.text_input("Today's Linelist URL")
@@ -90,12 +90,37 @@ if 'df_yearly' in st.session_state:
                 yearly_extra = normalize(yearly_row[extra_col])
                 
                 if daily_name == yearly_name and daily_name != "":
+                    mobile_match = daily_mobile == yearly_mobile
+                    addr_match = daily_addr == yearly_addr
+                    extra_match = daily_extra == yearly_extra
+                    
+                    # Count how many columns matched exactly
+                    exact_col_count = 1  # Name always matches in this section
+                    if mobile_match:
+                        exact_col_count += 1
+                    if addr_match:
+                        exact_col_count += 1
+                    if extra_match:
+                        exact_col_count += 1
+                    
+                    # Categorize based on total exact matches
+                    if exact_col_count == 4:
+                        match_category = '🟢 PERFECT - All 4 Exact'
+                    elif exact_col_count == 3:
+                        match_category = '🟢 STRONG - 3 Exact'
+                    elif exact_col_count == 2:
+                        match_category = '🟢 PARTIAL - 2 Exact'
+                    else:
+                        match_category = '🟢 WEAK - Only Name Exact'
+                    
                     exact_matches.append({
                         'daily_row': daily_row,
                         'yearly_row': yearly_row,
-                        'mobile_match': daily_mobile == yearly_mobile,
-                        'addr_match': daily_addr == yearly_addr,
-                        'extra_match': daily_extra == yearly_extra
+                        'mobile_match': mobile_match,
+                        'addr_match': addr_match,
+                        'extra_match': extra_match,
+                        'exact_col_count': exact_col_count,
+                        'match_category': match_category
                     })
             
             if exact_matches:
@@ -103,11 +128,12 @@ if 'df_yearly' in st.session_state:
                 for match in exact_matches[:3]:
                     all_results.append({
                         'Daily_Rec': i+1,
-                        'Match_Type': '🟢 EXACT',
+                        'Match_Type': match['match_category'],
+                        'Exact_Cols': match['exact_col_count'],
                         'Score': 100,
                         'Daily_Col1': match['daily_row'][name_col],
                         'Yearly_Col1': match['yearly_row'][name_col],
-                        'Col1%': '100%',
+                        'Col1': '✅',
                         'Daily_Col2': match['daily_row'][mobile_col],
                         'Yearly_Col2': match['yearly_row'][mobile_col],
                         'Col2': '✅' if match['mobile_match'] else '❌',
@@ -138,18 +164,18 @@ if 'df_yearly' in st.session_state:
                     # NEW SCORING: 40+30+15+15 = 100
                     score = 0
                     if col2_match:
-                        score += 40  # Column 2 (mobile) exact match
+                        score += 40
                     
-                    score += (col1_pct / 100) * 30  # Column 1 (name) fuzzy
-                    score += (col3_pct / 100) * 15  # Column 3 fuzzy
-                    score += (col4_pct / 100) * 15  # Column 4 fuzzy
+                    score += (col1_pct / 100) * 30
+                    score += (col3_pct / 100) * 15
+                    score += (col4_pct / 100) * 15
                     
                     if score >= 85:
-                        match_type = '🔴 HIGH'
+                        match_type = '🔴 HIGH - Fuzzy'
                     elif score >= 70:
-                        match_type = '🟡 MEDIUM'
+                        match_type = '🟡 MEDIUM - Fuzzy'
                     elif score >= 60:
-                        match_type = '⚪ LOW'
+                        match_type = '⚪ LOW - Fuzzy'
                     else:
                         continue
                     
@@ -173,6 +199,7 @@ if 'df_yearly' in st.session_state:
                         all_results.append({
                             'Daily_Rec': i+1,
                             'Match_Type': match['match_type'],
+                            'Exact_Cols': 0,
                             'Score': match['score'],
                             'Daily_Col1': match['daily_row'][name_col],
                             'Yearly_Col1': match['yearly_row'][name_col],
@@ -195,25 +222,46 @@ if 'df_yearly' in st.session_state:
         if all_results:
             df_out = pd.DataFrame(all_results)
             
-            exact = df_out[df_out['Match_Type'].str.contains('EXACT')]
+            # Categorize exact matches by column count
+            perfect = df_out[df_out['Match_Type'].str.contains('PERFECT')]
+            strong = df_out[df_out['Match_Type'].str.contains('STRONG')]
+            partial = df_out[df_out['Match_Type'].str.contains('PARTIAL')]
+            weak = df_out[df_out['Match_Type'].str.contains('WEAK')]
+            
+            # Fuzzy matches
             high = df_out[df_out['Match_Type'].str.contains('HIGH')]
             medium = df_out[df_out['Match_Type'].str.contains('MEDIUM')]
             low = df_out[df_out['Match_Type'].str.contains('LOW')]
             
-            if len(exact) > 0:
-                st.subheader(f"🟢 Exact ({len(exact)})")
-                st.dataframe(exact, use_container_width=True)
+            # EXACT MATCHES - Organized by strength
+            if len(perfect) > 0:
+                with st.expander(f"🟢 PERFECT - All 4 Columns Match ({len(perfect)}) ✅ Skip These"):
+                    st.caption("These are 100% duplicates - no need to review")
+                    st.dataframe(perfect, use_container_width=True)
             
+            if len(strong) > 0:
+                st.subheader(f"🟢 STRONG - 3 Columns Match ({len(strong)})")
+                st.dataframe(strong, use_container_width=True)
+            
+            if len(partial) > 0:
+                st.subheader(f"🟢 PARTIAL - 2 Columns Match ({len(partial)})")
+                st.dataframe(partial, use_container_width=True)
+            
+            if len(weak) > 0:
+                st.subheader(f"🟢 WEAK - Only Name Match ({len(weak)})")
+                st.dataframe(weak, use_container_width=True)
+            
+            # FUZZY MATCHES - Need review
             if len(high) > 0:
-                st.subheader(f"🔴 High ({len(high)})")
+                st.subheader(f"🔴 HIGH Fuzzy ({len(high)})")
                 st.dataframe(high, use_container_width=True)
             
             if len(medium) > 0:
-                st.subheader(f"🟡 Medium ({len(medium)})")
+                st.subheader(f"🟡 MEDIUM Fuzzy ({len(medium)})")
                 st.dataframe(medium, use_container_width=True)
             
             if len(low) > 0:
-                with st.expander(f"⚪ Low ({len(low)})"):
+                with st.expander(f"⚪ LOW Fuzzy ({len(low)})"):
                     st.dataframe(low, use_container_width=True)
             
             st.download_button("📥 Download", df_out.to_csv(index=False), "duplicates.csv")
